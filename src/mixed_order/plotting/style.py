@@ -64,3 +64,14 @@ def apply_pub_style():
         "savefig.dpi":        200,
         "savefig.bbox":       "tight",
     })
+
+def get_color_palette():
+    """Return the standard color dictionary used for thesis experiments."""
+    return {
+        'theory':     '#222222', # Charcoal/Black
+        'uncentered': '#EE3333', # Red (Drift/Failure)
+        'centered':   '#0077BB', # Blue (Correction)
+        'mixed':      '#009988', # Teal/Green (Mixed-order highlight)
+        'extra':      '#EE7733', # Orange
+        'base':       '#BBBBBB', # Grey
+    }

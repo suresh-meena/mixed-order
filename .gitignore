@@ -212,3 +212,5 @@ experiments/**/*.png
 experiments/**/*.pdf
 experiments/**/*.svg
 
+#VScode
+.vscode/

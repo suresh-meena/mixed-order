@@ -137,12 +137,12 @@ def heatmap_p_lambda(N, beta, n_p, n_lam, n_trials, n_seeds, success_threshold=0
     print(f"  Saved {path}")
 
 if __name__ == "__main__":
-    # Parameters from Implementation Plan Step 5.5
-    N = 256
+    # Reduced settings for faster execution
+    N = 128
     beta = 0.5
-    n_p = 8
-    n_lam = 10
-    n_trials = 16
-    n_seeds = 8
+    n_p = 6
+    n_lam = 6
+    n_trials = 8
+    n_seeds = 4
     
     heatmap_p_lambda(N, beta, n_p, n_lam, n_trials, n_seeds)
