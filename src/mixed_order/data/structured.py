@@ -1,16 +1,16 @@
 import torch
 import math
 
-def generate_factors(N: int, D: int, device: str = "cpu") -> torch.Tensor:
+def generate_factors(N: int, D: int, device: str = "cpu", generator: torch.Generator = None) -> torch.Tensor:
     """Generate fixed factor matrix F with normalized rows."""
-    F = torch.randn(N, D, device=device)
+    F = torch.randn(N, D, device=device, generator=generator, dtype=torch.float32)
     F = F / F.norm(dim=1, keepdim=True)
     return F
 
-def generate_structured_patterns(P: int, F: torch.Tensor, device: str = "cpu") -> torch.Tensor:
+def generate_structured_patterns(P: int, F: torch.Tensor, device: str = "cpu", generator: torch.Generator = None) -> torch.Tensor:
     """Generate patterns using Gaussian-sign teacher: xi_i = sign(F_i * z / sqrt(D))"""
     N, D = F.shape
-    z = torch.randn(P, D, device=device)
+    z = torch.randn(P, D, device=device, generator=generator, dtype=torch.float32)
     # F: (N, D), z: (P, D) -> z @ F.T is (P, N)
     h = z @ F.T / math.sqrt(D)
     

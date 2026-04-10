@@ -63,8 +63,8 @@ class MixedOrderHopfieldNetwork:
     @W_vals.setter
     def W_vals(self, val): self.storage.W_vals = val
 
-    def generate_masks(self):
-        self.topology.generate_masks()
+    def generate_masks(self, generator=None, device_override=None):
+        self.topology.generate_masks(generator=generator, device_override=device_override)
 
     def store_patterns(self, patterns):
         self.storage.store_multiple_p(patterns, [patterns.shape[0]])

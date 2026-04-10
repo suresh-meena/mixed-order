@@ -1,21 +1,26 @@
-import os, sys
+import os
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 from scipy.stats import spearmanr
 from tqdm import tqdm
 
-# Add parent directory of 'experiments' to sys.path to find utils
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from utils import (
-    apply_pub_style, compute_q_from_budget, replica_capacity,
-    optimal_lambda, capacity_on_optimal_line, find_empirical_pc
+from experiments.plot_helpers import apply_pub_style
+from mixed_order.theory import (
+    compute_q_from_budget,
+    replica_capacity,
+    optimal_lambda,
+    capacity_on_optimal_line,
+)
+from mixed_order.metrics import (
+    find_empirical_pc,
+    run_batched_retrieval,
+    seed_all,
+    _DEVICE,
 )
 
-# Results will be saved in the same folder as the script
 RESULT_DIR = os.path.dirname(__file__)
 
 apply_pub_style()
+
 
 def limiting_cases(N, beta, n_trials, n_seeds, n_p_values=8, n_lam_sweep=25):
     alpha_c  = 0.138
@@ -49,6 +54,29 @@ def limiting_cases(N, beta, n_trials, n_seeds, n_p_values=8, n_lam_sweep=25):
         for lam in pbar:
             pc_th_sw.append(replica_capacity(p_fixed, N, beta, lam=lam))
             pc_emp_sw.append(find_empirical_pc(N, p_fixed, beta, lam, n_trials, n_seeds, pbar=pbar))
+
+    np.savez(
+        os.path.join(RESULT_DIR, "limiting_cases_results.npz"),
+        N=N,
+        beta=beta,
+        n_trials=n_trials,
+        n_seeds=n_seeds,
+        n_p_values=n_p_values,
+        n_lam_sweep=n_lam_sweep,
+        p_values=p_values,
+        th_pw=th_pw,
+        th_3b=th_3b,
+        emp_pw=emp_pw,
+        emp_3b=emp_3b,
+        lam_sweep=lam_sweep,
+        pc_th_sw=pc_th_sw,
+        pc_emp_sw=pc_emp_sw,
+        p_fixed=p_fixed,
+        lam_pw=lam_pw,
+        lam_3b=lam_3b,
+        rho_pw=rho_pw,
+        rho_3b=rho_3b,
+    )
 
     # ── Plotting ────────────────────────────────────────────────────────────
     _C_PW  = "#0077BB"
@@ -87,8 +115,3 @@ def limiting_cases(N, beta, n_trials, n_seeds, n_p_values=8, n_lam_sweep=25):
     fig2.savefig(path2)
     plt.close(fig2)
     print(f"  Saved {path1} and {path2}")
-
-if __name__ == "__main__":
-    N, n_trials, n_seeds = 100, 4, 3
-    beta = 0.5
-    limiting_cases(N, beta, n_trials, n_seeds)

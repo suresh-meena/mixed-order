@@ -208,9 +208,8 @@ __marimo__/
 
 # Application specific
 
-experiments/**/*.png
-experiments/**/*.pdf
-experiments/**/*.svg
+
 
 #VScode
 .vscode/
+.codex

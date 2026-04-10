@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 import sys
 
 import numpy as np
@@ -12,6 +12,7 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
@@ -75,12 +76,7 @@ def make_structured_bank(
     device: str,
     shared_template: bool = True,
     group_size: int = 1,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Build a simple hybrid bank where class identity is mostly carried by
-    triple-wise parity signatures. The first two bits in each triple come from a
-    shared template, so the parity signal is isolated and deterministic.
-    """
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     gen = make_generator(seed, device)
     tri_i, tri_j, tri_k = make_disjoint_triples(n_triples, device)
     total_bits = int(n_proto + 3 * n_triples)
@@ -100,7 +96,7 @@ def make_structured_bank(
     else:
         parity = sample_rademacher((n_patterns, n_triples), gen, device)
 
-    for mu in range(n_patterns):
+    for mu in tqdm(range(n_patterns), desc="build patterns", leave=False):
         if n_proto > 0:
             patterns[mu, :n_proto] = proto
         for t in range(n_triples):
@@ -110,6 +106,70 @@ def make_structured_bank(
             patterns[mu, start : start + 3] = torch.stack([b1, b2, b3])
 
     return patterns, parity, tri_i + n_proto, tri_j + n_proto, tri_k + n_proto
+
+
+def make_hybrid_bank(
+    n_patterns: int,
+    n_proto: int,
+    n_triples: int,
+    seed: int,
+    device: str,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    gen = make_generator(seed, device)
+    tri_i, tri_j, tri_k = make_disjoint_triples(n_triples, device)
+    total_bits = int(n_proto + 3 * n_triples)
+
+    patterns = torch.empty((n_patterns, total_bits), device=device)
+    proto = sample_rademacher((n_patterns, n_proto), gen, device)
+    parity = sample_rademacher((n_patterns, n_triples), gen, device)
+    triple_base = sample_rademacher((n_patterns, n_triples, 2), gen, device)
+
+    for mu in tqdm(range(n_patterns), desc="build hybrid patterns", leave=False):
+        patterns[mu, :n_proto] = proto[mu]
+        for t in range(n_triples):
+            b1, b2 = triple_base[mu, t]
+            b3 = parity[mu, t] * b1 * b2
+            start = n_proto + 3 * t
+            patterns[mu, start : start + 3] = torch.stack([b1, b2, b3])
+
+    return patterns, parity, tri_i + n_proto, tri_j + n_proto, tri_k + n_proto
+
+
+def make_grouped_hybrid_bank(
+    n_groups: int,
+    variants_per_group: int,
+    n_proto: int,
+    n_triples: int,
+    seed: int,
+    device: str,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    gen = make_generator(seed, device)
+    tri_i, tri_j, tri_k = make_disjoint_triples(n_triples, device)
+    n_patterns = n_groups * variants_per_group
+    total_bits = int(n_proto + 3 * n_triples)
+
+    group_proto = sample_rademacher((n_groups, n_proto), gen, device)
+    variant_parity = sample_rademacher((variants_per_group, n_triples), gen, device)
+    triple_base = sample_rademacher((variants_per_group, n_triples, 2), gen, device)
+
+    patterns = torch.empty((n_patterns, total_bits), device=device)
+    group_ids = torch.empty((n_patterns,), dtype=torch.long, device=device)
+    variant_ids = torch.empty((n_patterns,), dtype=torch.long, device=device)
+
+    idx = 0
+    for g in tqdm(range(n_groups), desc="groups", leave=False):
+        for v in range(variants_per_group):
+            patterns[idx, :n_proto] = group_proto[g]
+            for t in range(n_triples):
+                b1, b2 = triple_base[v, t]
+                b3 = variant_parity[v, t] * b1 * b2
+                start = n_proto + 3 * t
+                patterns[idx, start : start + 3] = torch.stack([b1, b2, b3])
+            group_ids[idx] = g
+            variant_ids[idx] = v
+            idx += 1
+
+    return patterns, group_ids, variant_ids, tri_i + n_proto, tri_j + n_proto, tri_k + n_proto, group_proto
 
 
 def make_antipodal_pair(
@@ -142,8 +202,7 @@ def corrupt_bits(x: torch.Tensor, noise: float, generator: torch.Generator) -> t
     return y
 
 
-def corrupt_triples(x: torch.Tensor, tri_i: torch.Tensor, tri_j: torch.Tensor, tri_k: torch.Tensor, noise: float,
-                    generator: torch.Generator) -> torch.Tensor:
+def corrupt_triples(x: torch.Tensor, tri_i: torch.Tensor, tri_j: torch.Tensor, tri_k: torch.Tensor, noise: float, generator: torch.Generator) -> torch.Tensor:
     if noise <= 0:
         return x.clone()
     y = x.clone()
@@ -157,7 +216,10 @@ def corrupt_triples(x: torch.Tensor, tri_i: torch.Tensor, tri_j: torch.Tensor, t
     return y
 
 
-def pairwise_scores(x: torch.Tensor, patterns: torch.Tensor) -> torch.Tensor:
+def pairwise_scores(x: torch.Tensor, patterns: torch.Tensor, proto_dim: Optional[int] = None) -> torch.Tensor:
+    if proto_dim is not None:
+        x = x[..., :proto_dim]
+        patterns = patterns[:, :proto_dim]
     overlaps = (x @ patterns.T) / x.shape[-1]
     return overlaps.square()
 
@@ -178,9 +240,10 @@ def mixed_scores(
     tri_i: torch.Tensor,
     tri_j: torch.Tensor,
     tri_k: torch.Tensor,
+    proto_dim: Optional[int] = None,
     cubic_weight: float = 1.0,
 ) -> torch.Tensor:
-    return pairwise_scores(x, patterns) + cubic_weight * cubic_scores(x, patterns, tri_i, tri_j, tri_k)
+    return pairwise_scores(x, patterns, proto_dim=proto_dim) + cubic_weight * cubic_scores(x, patterns, tri_i, tri_j, tri_k)
 
 
 def score_model(
@@ -190,13 +253,14 @@ def score_model(
     tri_j: torch.Tensor,
     tri_k: torch.Tensor,
     mode: Mode,
+    proto_dim: Optional[int] = None,
     cubic_weight: float = 1.0,
 ) -> torch.Tensor:
     if mode == "pairwise":
-        return pairwise_scores(x, patterns)
+        return pairwise_scores(x, patterns, proto_dim=proto_dim)
     if mode == "cubic":
         return cubic_scores(x, patterns, tri_i, tri_j, tri_k)
-    return mixed_scores(x, patterns, tri_i, tri_j, tri_k, cubic_weight=cubic_weight)
+    return mixed_scores(x, patterns, tri_i, tri_j, tri_k, proto_dim=proto_dim, cubic_weight=cubic_weight)
 
 
 def retrieve_state(
@@ -208,11 +272,12 @@ def retrieve_state(
     mode: Mode,
     beta: float,
     max_steps: int,
+    proto_dim: Optional[int] = None,
     cubic_weight: float = 1.0,
 ) -> torch.Tensor:
     state = x0.clone()
     for _ in range(max_steps):
-        scores = score_model(state.unsqueeze(0), patterns, tri_i, tri_j, tri_k, mode, cubic_weight=cubic_weight)
+        scores = score_model(state.unsqueeze(0), patterns, tri_i, tri_j, tri_k, mode, proto_dim=proto_dim, cubic_weight=cubic_weight)
         weights = torch.softmax(beta * scores, dim=-1)
         state_new = weights @ patterns
         state_new = sign01(state_new.squeeze(0))
@@ -229,14 +294,11 @@ def classify_queries(
     tri_j: torch.Tensor,
     tri_k: torch.Tensor,
     mode: Mode,
+    proto_dim: Optional[int] = None,
     cubic_weight: float = 1.0,
 ) -> torch.Tensor:
-    scores = score_model(queries, patterns, tri_i, tri_j, tri_k, mode, cubic_weight=cubic_weight)
+    scores = score_model(queries, patterns, tri_i, tri_j, tri_k, mode, proto_dim=proto_dim, cubic_weight=cubic_weight)
     return scores.argmax(dim=-1)
-
-
-def success_rate(pred: torch.Tensor, target: torch.Tensor) -> float:
-    return float((pred == target).float().mean().item())
 
 
 def task3_score_separation(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
@@ -247,7 +309,7 @@ def task3_score_separation(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
 
     pair = pairwise_scores(probe, patterns).squeeze(0).detach().cpu().numpy()
     cub = cubic_scores(probe, patterns, tri_i, tri_j, tri_k).squeeze(0).detach().cpu().numpy()
-    mix = (pairwise_scores(probe, patterns) + cubic_scores(probe, patterns, tri_i, tri_j, tri_k)).squeeze(0).detach().cpu().numpy()
+    mix = pair + cub
 
     return {
         "patterns": patterns.detach().cpu().numpy(),
@@ -259,38 +321,49 @@ def task3_score_separation(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
 
 
 def task1_parity_retrieval(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
-    n_patterns = 4
-    n_proto = 1
-    n_triples = 21
+    n_groups = 4
+    variants_per_group = 4
+    n_patterns = n_groups * variants_per_group
+    n_proto = 8
+    n_triples = 8
     n_trials = 128
-    patterns, parity, tri_i, tri_j, tri_k = make_structured_bank(
-        n_patterns=n_patterns,
+    patterns, group_ids, variant_ids, tri_i, tri_j, tri_k, _ = make_grouped_hybrid_bank(
+        n_groups=n_groups,
+        variants_per_group=variants_per_group,
         n_proto=n_proto,
         n_triples=n_triples,
         seed=cfg.seed,
         device=cfg.device,
-        shared_template=False,
-        group_size=1,
     )
     gen = make_generator(cfg.seed + 101, cfg.device)
     noise_levels = torch.tensor(cfg.noise_levels, device=cfg.device)
+    mixed_weight = 1.0
 
     acc = {mode: [] for mode in ("pairwise", "cubic", "mixed")}
     overlap = {mode: [] for mode in ("pairwise", "cubic", "mixed")}
 
-    for noise in noise_levels.tolist():
+    for noise in tqdm(noise_levels.tolist(), desc="noise levels", leave=False):
+        mu_idx = torch.randint(0, n_patterns, (n_trials,), generator=gen, device=cfg.device)
+        cue = torch.stack([corrupt_bits(patterns[int(mu)], noise, gen) for mu in mu_idx.tolist()], dim=0)
+        target = patterns[mu_idx]
         mode_acc = {m: [] for m in acc}
         mode_ov = {m: [] for m in overlap}
-        for _ in range(n_trials):
-            mu = int(torch.randint(0, n_patterns, (1,), generator=gen, device=cfg.device).item())
-            cue = corrupt_bits(patterns[mu], noise, gen)
-            cue = cue.unsqueeze(0)
-            target = patterns[mu].unsqueeze(0)
-            for mode in acc:
-                pred = classify_queries(cue, patterns, tri_i, tri_j, tri_k, mode).item()
-                mode_acc[mode].append(float(pred == mu))
-                final = retrieve_state(cue.squeeze(0), patterns, tri_i, tri_j, tri_k, mode, beta=cfg.beta, max_steps=cfg.max_steps)
-                mode_ov[mode].append(float((final * target.squeeze(0)).sum().item() / target.shape[-1]))
+        for mode in acc:
+            pred = classify_queries(cue, patterns, tri_i, tri_j, tri_k, mode, proto_dim=n_proto, cubic_weight=mixed_weight)
+            mode_acc[mode].append((pred == mu_idx).to(dtype=torch.float32).mean().item())
+            final = retrieve_state(
+                cue,
+                patterns,
+                tri_i,
+                tri_j,
+                tri_k,
+                mode,
+                beta=cfg.beta,
+                max_steps=cfg.max_steps,
+                proto_dim=n_proto,
+                cubic_weight=mixed_weight,
+            )
+            mode_ov[mode].append(((final * target).sum(dim=1) / target.shape[-1]).mean().item())
         for mode in acc:
             acc[mode].append(float(np.mean(mode_acc[mode])))
             overlap[mode].append(float(np.mean(mode_ov[mode])))
@@ -300,7 +373,8 @@ def task1_parity_retrieval(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
         "accuracy": {k: np.array(v, dtype=np.float32) for k, v in acc.items()},
         "overlap": {k: np.array(v, dtype=np.float32) for k, v in overlap.items()},
         "patterns": patterns.detach().cpu().numpy(),
-        "parity": parity.detach().cpu().numpy(),
+        "group_ids": group_ids.detach().cpu().numpy(),
+        "variant_ids": variant_ids.detach().cpu().numpy(),
     }
 
 
@@ -319,7 +393,7 @@ def task2_capacity_curve(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
         "structured_mixed": [],
     }
 
-    for P in P_grid.tolist():
+    for P in tqdm(P_grid.tolist(), desc="P sweep", leave=False):
         n_classes = int(P)
         seed_base = cfg.seed + P
 
@@ -337,21 +411,14 @@ def task2_capacity_curve(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
 
         gen = make_generator(seed_base + 17, cfg.device)
         for mode in ("pairwise", "mixed"):
-            correct_iid = []
-            correct_struct = []
-            for _ in range(n_trials):
-                mu_iid = int(torch.randint(0, n_classes, (1,), generator=gen, device=cfg.device).item())
-                cue_iid = corrupt_bits(iid_patterns[mu_iid], 0.2, gen).unsqueeze(0)
-                pred_iid = classify_queries(cue_iid, iid_patterns, iid_tri_i, iid_tri_j, iid_tri_k, mode).item()
-                correct_iid.append(float(pred_iid == mu_iid))
-
-                mu_s = int(torch.randint(0, n_classes, (1,), generator=gen, device=cfg.device).item())
-                cue_s = corrupt_bits(structured_patterns[mu_s], 0.2, gen).unsqueeze(0)
-                pred_s = classify_queries(cue_s, structured_patterns, tri_i, tri_j, tri_k, mode).item()
-                correct_struct.append(float(pred_s == mu_s))
-
-            out[f"iid_{mode}"].append(float(np.mean(correct_iid)))
-            out[f"structured_{mode}"].append(float(np.mean(correct_struct)))
+            mu_iid = torch.randint(0, n_classes, (n_trials,), generator=gen, device=cfg.device)
+            mu_struct = torch.randint(0, n_classes, (n_trials,), generator=gen, device=cfg.device)
+            cue_iid = torch.stack([corrupt_bits(iid_patterns[int(mu)], 0.2, gen) for mu in mu_iid.tolist()], dim=0)
+            cue_struct = torch.stack([corrupt_bits(structured_patterns[int(mu)], 0.2, gen) for mu in mu_struct.tolist()], dim=0)
+            pred_iid = classify_queries(cue_iid, iid_patterns, iid_tri_i, iid_tri_j, iid_tri_k, mode)
+            pred_struct = classify_queries(cue_struct, structured_patterns, tri_i, tri_j, tri_k, mode)
+            out[f"iid_{mode}"].append((pred_iid == mu_iid).to(dtype=torch.float32).mean().item())
+            out[f"structured_{mode}"].append((pred_struct == mu_struct).to(dtype=torch.float32).mean().item())
 
     return {
         "P_grid": P_grid.astype(np.int32),
@@ -372,7 +439,7 @@ def task4_spurious_census(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
     final_counts: Dict[str, List[float]] = {"pairwise": [], "mixed": []}
     stored_hits: Dict[str, List[float]] = {"pairwise": [], "mixed": []}
 
-    for k in k_grid.tolist():
+    for k in tqdm(k_grid.tolist(), desc="k sweep", leave=False):
         patterns, _, tri_i, tri_j, tri_k = make_structured_bank(
             n_patterns=k,
             n_proto=n_proto,
@@ -384,16 +451,10 @@ def task4_spurious_census(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
         )
         gen = make_generator(cfg.seed + 1000 + k, cfg.device)
         for mode in ("pairwise", "mixed"):
-            finals = []
-            stored = 0
-            for _ in range(n_inits):
-                x0 = sample_rademacher((n_bits,), gen, cfg.device)
-                xf = retrieve_state(x0, patterns, tri_i, tri_j, tri_k, mode, beta=beta, max_steps=max_steps)
-                finals.append(xf)
-                overlaps = (patterns @ xf) / n_bits
-                if overlaps.abs().max().item() >= 0.95:
-                    stored += 1
-            finals_tensor = torch.stack(finals, dim=0)
+            x0 = sample_rademacher((n_inits, n_bits), gen, cfg.device)
+            finals_tensor = retrieve_state(x0, patterns, tri_i, tri_j, tri_k, mode, beta=beta, max_steps=max_steps)
+            overlaps = (patterns @ finals_tensor.T) / n_bits
+            stored = (overlaps.abs().amax(dim=1) >= 0.95).to(dtype=torch.float32).sum().item()
             uniq = torch.unique(finals_tensor, dim=0).shape[0]
             spurious = max(0, int(uniq - patterns.shape[0]))
             final_counts[mode].append(float(spurious))
@@ -409,21 +470,23 @@ def task4_spurious_census(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
 
 
 def task5_triple_basin(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
-    n_patterns = 4
-    n_proto = 1
-    n_triples = 21
-    patterns, _, tri_i, tri_j, tri_k = make_structured_bank(
-        n_patterns=n_patterns,
+    n_groups = 4
+    variants_per_group = 4
+    n_patterns = n_groups * variants_per_group
+    n_proto = 8
+    n_triples = 8
+    patterns, _, _, tri_i, tri_j, tri_k, _ = make_grouped_hybrid_bank(
+        n_groups=n_groups,
+        variants_per_group=variants_per_group,
         n_proto=n_proto,
         n_triples=n_triples,
         seed=cfg.seed + 404,
         device=cfg.device,
-        shared_template=False,
-        group_size=1,
     )
     gen = make_generator(cfg.seed + 405, cfg.device)
     noise_grid = torch.tensor(cfg.basin_noise_levels, device=cfg.device)
     n_trials = 96
+    mixed_weight = 1.5
 
     out: Dict[str, List[float]] = {
         "pairwise_bitflip": [],
@@ -432,21 +495,38 @@ def task5_triple_basin(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
         "mixed_tripleflip": [],
     }
 
-    for noise in noise_grid.tolist():
+    for noise in tqdm(noise_grid.tolist(), desc="basin noise", leave=False):
         for mode in ("pairwise", "mixed"):
-            success_bit = []
-            success_tri = []
-            for _ in range(n_trials):
-                mu = int(torch.randint(0, n_patterns, (1,), generator=gen, device=cfg.device).item())
-                cue = patterns[mu]
-                x_bit = corrupt_bits(cue, noise, gen)
-                x_tri = corrupt_triples(cue, tri_i, tri_j, tri_k, noise, gen)
-                y_bit = retrieve_state(x_bit, patterns, tri_i, tri_j, tri_k, mode, beta=cfg.beta, max_steps=cfg.max_steps)
-                y_tri = retrieve_state(x_tri, patterns, tri_i, tri_j, tri_k, mode, beta=cfg.beta, max_steps=cfg.max_steps)
-                success_bit.append(float((y_bit * patterns[mu]).mean().item() > 0.9))
-                success_tri.append(float((y_tri * patterns[mu]).mean().item() > 0.9))
-            out[f"{mode}_bitflip"].append(float(np.mean(success_bit)))
-            out[f"{mode}_tripleflip"].append(float(np.mean(success_tri)))
+            mu = torch.randint(0, n_patterns, (n_trials,), generator=gen, device=cfg.device)
+            cues = patterns[mu]
+            x_bit = torch.stack([corrupt_bits(cue, noise, gen) for cue in cues], dim=0)
+            x_tri = torch.stack([corrupt_triples(cue, tri_i, tri_j, tri_k, noise, gen) for cue in cues], dim=0)
+            y_bit = retrieve_state(
+                x_bit,
+                patterns,
+                tri_i,
+                tri_j,
+                tri_k,
+                mode,
+                beta=cfg.beta,
+                max_steps=cfg.max_steps,
+                proto_dim=n_proto,
+                cubic_weight=mixed_weight,
+            )
+            y_tri = retrieve_state(
+                x_tri,
+                patterns,
+                tri_i,
+                tri_j,
+                tri_k,
+                mode,
+                beta=cfg.beta,
+                max_steps=cfg.max_steps,
+                proto_dim=n_proto,
+                cubic_weight=mixed_weight,
+            )
+            out[f"{mode}_bitflip"].append(((y_bit * patterns[mu]).mean(dim=1) > 0.9).to(dtype=torch.float32).mean().item())
+            out[f"{mode}_tripleflip"].append(((y_tri * patterns[mu]).mean(dim=1) > 0.9).to(dtype=torch.float32).mean().item())
 
     return {
         "noise_levels": np.array(cfg.basin_noise_levels, dtype=np.float32),
@@ -457,62 +537,72 @@ def task5_triple_basin(cfg: HamSuiteConfig) -> Dict[str, np.ndarray]:
 def plot_report(task3: Dict[str, np.ndarray], task1: Dict[str, np.ndarray], task4: Dict[str, np.ndarray], task2: Dict[str, np.ndarray], out_path: Path) -> None:
     apply_pub_style()
     cp = get_color_palette()
-    fig, axes = plt.subplots(2, 2, figsize=(12.5, 9.5))
-    ax = axes.ravel()
+    out_path = Path(out_path)
+    out_dir = out_path.parent
+    base = out_path.stem
 
-    # Task 3
+    # Task 3: antipodal null-space (bar plot)
+    fig_t3, ax_t3 = plt.subplots(figsize=(6.5, 4.5))
     x = np.arange(2)
     width = 0.23
     labels = ["A", "B"]
-    ax0 = ax[0]
-    ax0.bar(x - width, task3["pairwise"], width, label="pairwise", color=cp["uncentered"])
-    ax0.bar(x, task3["cubic"], width, label="cubic", color=cp["centered"])
-    ax0.bar(x + width, task3["mixed"], width, label="mixed", color=cp["mixed"])
-    ax0.set_xticks(x)
-    ax0.set_xticklabels(labels)
-    ax0.set_title("Task 3: antipodal null-space")
-    ax0.set_ylabel("score")
-    ax0.legend(frameon=False)
-    ax0.text(0.02, 0.02, "pairwise ties\ncubic flips sign", transform=ax0.transAxes, fontsize=10, va="bottom")
+    ax_t3.bar(x - width, task3["pairwise"], width, label="pairwise", color=cp["uncentered"])
+    ax_t3.bar(x, task3["cubic"], width, label="cubic", color=cp["centered"])
+    ax_t3.bar(x + width, task3["mixed"], width, label="mixed", color=cp["mixed"])
+    ax_t3.set_xticks(x)
+    ax_t3.set_xticklabels(labels)
+    ax_t3.set_title("Task 3: antipodal null-space")
+    ax_t3.set_ylabel("score")
+    ax_t3.legend(frameon=False)
+    ax_t3.text(0.02, 0.02, "pairwise ties\ncubic flips sign", transform=ax_t3.transAxes, fontsize=10, va="bottom")
+    path_t3 = out_dir / f"{base}_task3.png"
+    fig_t3.tight_layout()
+    fig_t3.savefig(path_t3)
+    plt.close(fig_t3)
 
-    # Task 1
-    ax1 = ax[1]
+    # Task 1: parity retrieval (line plot)
+    fig_t1, ax_t1 = plt.subplots(figsize=(6.5, 4.5))
     colors = {"pairwise": cp["uncentered"], "cubic": cp["centered"], "mixed": cp["mixed"]}
     for mode in ("pairwise", "cubic", "mixed"):
-        ax1.plot(task1["noise_levels"], task1["accuracy"][mode], "o-", color=colors[mode], label=mode)
-    ax1.set_title("Task 1: parity retrieval")
-    ax1.set_xlabel("bit-flip noise")
-    ax1.set_ylabel("accuracy")
-    ax1.set_ylim(0.0, 1.02)
-    ax1.legend(frameon=False)
+        ax_t1.plot(task1["noise_levels"], task1["accuracy"][mode], "o-", color=colors[mode], label=mode)
+    ax_t1.set_title("Task 1: parity retrieval")
+    ax_t1.set_xlabel("bit-flip noise")
+    ax_t1.set_ylabel("accuracy")
+    ax_t1.set_ylim(0.0, 1.02)
+    ax_t1.legend(frameon=False)
+    path_t1 = out_dir / f"{base}_task1.png"
+    fig_t1.tight_layout()
+    fig_t1.savefig(path_t1)
+    plt.close(fig_t1)
 
-    # Task 4
-    ax2 = ax[2]
-    ax2.plot(task4["k_grid"], task4["pairwise_spurious"], "o-", color=cp["uncentered"], label="pairwise")
-    ax2.plot(task4["k_grid"], task4["mixed_spurious"], "o-", color=cp["mixed"], label="mixed")
-    ax2.set_title("Task 4: spurious attractor census")
-    ax2.set_xlabel("stored patterns K")
-    ax2.set_ylabel("unique non-stored attractors")
-    ax2.legend(frameon=False)
+    # Task 4: spurious attractor census
+    fig_t4, ax_t4 = plt.subplots(figsize=(6.5, 4.5))
+    ax_t4.plot(task4["k_grid"], task4["pairwise_spurious"], "o-", color=cp["uncentered"], label="pairwise")
+    ax_t4.plot(task4["k_grid"], task4["mixed_spurious"], "o-", color=cp["mixed"], label="mixed")
+    ax_t4.set_title("Task 4: spurious attractor census")
+    ax_t4.set_xlabel("stored patterns K")
+    ax_t4.set_ylabel("unique non-stored attractors")
+    ax_t4.legend(frameon=False)
+    path_t4 = out_dir / f"{base}_task4.png"
+    fig_t4.tight_layout()
+    fig_t4.savefig(path_t4)
+    plt.close(fig_t4)
 
-    # Task 2
-    ax3 = ax[3]
-    ax3.plot(task2["alpha_grid"], task2["iid_pairwise"], "o--", color=cp["uncentered"], label="iid pairwise")
-    ax3.plot(task2["alpha_grid"], task2["iid_mixed"], "o-", color=cp["mixed"], label="iid mixed")
-    ax3.plot(task2["alpha_grid"], task2["structured_pairwise"], "s--", color=cp["extra"], label="structured pairwise")
-    ax3.plot(task2["alpha_grid"], task2["structured_mixed"], "s-", color=cp["centered"], label="structured mixed")
-    ax3.set_title("Task 2: load curve at fixed budget")
-    ax3.set_xlabel(r"$\alpha = P / N^2$")
-    ax3.set_ylabel("classification accuracy")
-    ax3.set_ylim(0.0, 1.02)
-    ax3.legend(frameon=False, fontsize=9)
-
-    for a in ax:
-        a.grid(True, alpha=0.25)
-
-    fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)
+    # Task 2: load curve at fixed budget
+    fig_t2, ax_t2 = plt.subplots(figsize=(6.5, 4.5))
+    ax_t2.plot(task2["alpha_grid"], task2["iid_pairwise"], "o--", color=cp["uncentered"], label="iid pairwise")
+    ax_t2.plot(task2["alpha_grid"], task2["iid_mixed"], "o-", color=cp["mixed"], label="iid mixed")
+    ax_t2.plot(task2["alpha_grid"], task2["structured_pairwise"], "s--", color=cp["extra"], label="structured pairwise")
+    ax_t2.plot(task2["alpha_grid"], task2["structured_mixed"], "s-", color=cp["centered"], label="structured mixed")
+    ax_t2.set_title("Task 2: load curve at fixed budget")
+    ax_t2.set_xlabel(r"$\alpha = P / N^2$")
+    ax_t2.set_ylabel("classification accuracy")
+    ax_t2.set_ylim(0.0, 1.02)
+    ax_t2.legend(frameon=False, fontsize=9)
+    path_t2 = out_dir / f"{base}_task2.png"
+    fig_t2.tight_layout()
+    fig_t2.savefig(path_t2)
+    plt.close(fig_t2)
 
 
 def plot_basin(task5: Dict[str, np.ndarray], out_path: Path) -> None:

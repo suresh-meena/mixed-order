@@ -1,4 +1,5 @@
 import torch
+from mixed_order.utils import pin_and_move
 
 class Storage:
     def __init__(self, config, topology):
@@ -21,31 +22,86 @@ class Storage:
         device = self.config.device
         p_list = sorted(p_list)
         B = len(p_list)
-        patterns = patterns.float().to(device)
+        # Move patterns to target device; if patterns live in pinned CPU memory
+        # this can be done asynchronously via `pin_and_move`.
+        patterns = pin_and_move(patterns, device, dtype=self.config.dtype)
+        C_device = None if C is None else pin_and_move(C, device)
 
-        # 2-body: Iterative accumulation to avoid O(P_max * N^2) memory
-        self.J = torch.empty(B, N, N, device=device)
-        J_acc = torch.zeros(N, N, device=device)
-        
-        current_P = 0
-        for b, P in enumerate(p_list):
-            if self.config.p > 0:
-                # Accumulate new patterns up to P
-                if P > current_P:
-                    # e.g., chunk size is P - current_P
-                    p_chunk = patterns[current_P:P]
-                    # We can use einsum or mm for the chunk: (chunk, N) -> (N, N)
-                    J_acc += torch.matmul(p_chunk.T, p_chunk)
-                    current_P = P
-                    
-                J_b = J_acc.clone()
-                if centered and C is not None:
-                    J_b = J_b - P * C.to(device)
-                J_b = J_b / (self.config.p * N)
-            else:
-                J_b = torch.zeros(N, N, device=device)
-            J_b.fill_diagonal_(0.0)
-            self.J[b] = J_b * self.topology.c
+        # 2-body: choose dense or sparse accumulation depending on topology density
+        use_sparse = False
+        edge_i = edge_j = None
+        if self.topology.c is not None:
+            upper = torch.triu(self.topology.c, diagonal=1)
+            edge_idx = torch.nonzero(upper, as_tuple=False)
+            n_edges = edge_idx.shape[0]
+            total_pairs = N * (N - 1) // 2
+            frac = float(n_edges) / float(total_pairs) if total_pairs > 0 else 0.0
+            use_sparse = frac <= getattr(self.config, 'sparse_threshold', 0.10) and n_edges > 0
+
+        if not use_sparse:
+            # Dense accumulation (original path)
+            self.J = torch.empty(B, N, N, device=device)
+            J_acc = torch.zeros(N, N, device=device)
+
+            current_P = 0
+            for b, P in enumerate(p_list):
+                if self.config.p > 0:
+                    # Accumulate new patterns up to P
+                    if P > current_P:
+                        # e.g., chunk size is P - current_P
+                        p_chunk = patterns[current_P:P]
+                        # We can use einsum or mm for the chunk: (chunk, N) -> (N, N)
+                        J_acc += torch.matmul(p_chunk.T, p_chunk)
+                        current_P = P
+                        
+                    J_b = J_acc.clone()
+                    if centered and C_device is not None:
+                        J_b = J_b - P * C_device
+                    J_b = J_b / (self.config.p * N)
+                else:
+                    J_b = torch.zeros(N, N, device=device)
+                J_b.fill_diagonal_(0.0)
+                self.J[b] = J_b * self.topology.c
+        else:
+            # Sparse accumulation: store only upper-triangular edges (i < j)
+            edge_i = pin_and_move(edge_idx[:, 0], device, dtype=torch.long)
+            edge_j = pin_and_move(edge_idx[:, 1], device, dtype=torch.long)
+            n_edges = edge_i.numel()
+
+            # Prepare sparse containers
+            self.J = None
+            self.J_edges_i = edge_i
+            self.J_edges_j = edge_j
+            self.J_vals = torch.empty(B, n_edges, device=device, dtype=self.config.dtype)
+
+            J_acc_edges = torch.zeros(n_edges, device=device, dtype=self.config.dtype)
+            current_P = 0
+
+            # Precompute C edge values if centering requested
+            C_edge = None
+            if centered and C_device is not None:
+                C_edge = C_device[edge_i, edge_j]
+
+            for b, P in enumerate(p_list):
+                if self.config.p > 0:
+                    if P > current_P:
+                        p_chunk = patterns[current_P:P]
+                        # gather columns for all edges
+                        p_i = p_chunk[:, edge_i]
+                        p_j = p_chunk[:, edge_j]
+                        # accumulate sum_mu xi_i * xi_j for each edge
+                        J_acc_edges += (p_i * p_j).sum(dim=0)
+                        current_P = P
+
+                    if centered and C_edge is not None:
+                        J_vals_b = (J_acc_edges - P * C_edge) / (self.config.p * N)
+                    else:
+                        J_vals_b = J_acc_edges / (self.config.p * N)
+                else:
+                    J_vals_b = torch.zeros(n_edges, device=device, dtype=self.config.dtype)
+
+                # store per-capacity edge values
+                self.J_vals[b] = J_vals_b
 
         # 3-body: Iterative accumulation over triangles
         if self.topology.n_tri > 0:

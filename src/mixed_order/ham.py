@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import math
+from mixed_order.utils import pin_and_move
 
 class SparseMixedOrderHAM:
     """
@@ -15,7 +16,7 @@ class SparseMixedOrderHAM:
         
     def store(self, patterns):
         """Store the patterns (keys). patterns shape: (P, N)"""
-        self.patterns = patterns.float().to(self.config.device)
+        self.patterns = pin_and_move(patterns, self.config.device, dtype=self.config.dtype)
         self.P = self.patterns.shape[0]
         
     def score(self, x):
@@ -42,7 +43,7 @@ class SparseMixedOrderHAM:
         m = x_flat * p_flat
         
         # 1. Pairwise score: sum_{i,j} c_ij m_i m_j
-        C = self.topology.c.to(device).float()
+        C = pin_and_move(self.topology.c, device, dtype=self.config.dtype)
         
         # Reshape m to (B*P, N) for bmm/mv operations, or use einsum
         # m: (B, P, N)
@@ -83,7 +84,7 @@ class SparseMixedOrderHAM:
         Returns:
             (B, N) fixed point state
         """
-        state = x.clone().float().to(self.config.device)
+        state = pin_and_move(x.clone(), self.config.device, dtype=self.config.dtype)
         
         for _ in range(max_steps):
             scores = self.score(state) # (B, P)
