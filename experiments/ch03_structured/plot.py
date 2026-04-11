@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+# Ensure repository root is on sys.path when running this script directly
+import sys
+import pathlib
+_file = pathlib.Path(__file__).resolve()
+_repo_root = None
+for _ancestor in _file.parents:
+    if _ancestor.name == "experiments":
+        _repo_root = _ancestor.parent
+        break
+if _repo_root is None:
+    _repo_root = _file.parents[1] if len(_file.parents) >= 2 else _file.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +51,58 @@ def main() -> None:
     pc_u = data["shift_pc_uncentered"]
     delta_m = data["shift_delta_measured"]
     delta_p = data["shift_delta_pred"]
+    alpha_g2 = data["alpha_g2_g2"]
+    alpha_star = data["alpha_g2_alpha_star"]
+    lam_two = data["alpha_g2_lambda_vals"]
+    phase_g2 = data["phase_g2"]
+    phase_lam = data["phase_lambda_vals"]
+    phase_storage = data["phase_alpha_storage"]
+    phase_learn = data["phase_alpha_learn"]
+    phase_order = np.argsort(phase_g2)
+    phase_g2_sorted = phase_g2[phase_order]
+    phase_x = np.logspace(np.log10(float(np.min(phase_g2_sorted))), np.log10(float(np.max(phase_g2_sorted))), 300)
+
+    fig_phase, ax_phase = plt.subplots(figsize=(8.6, 5.6))
+    colors = [cp["centered"], cp["mixed"]]
+    for i, lam_i in enumerate(phase_lam.tolist()):
+        storage_sorted = phase_storage[i][phase_order]
+        learn_sorted = phase_learn[i][phase_order]
+        storage_smooth = np.interp(phase_x, phase_g2_sorted, storage_sorted)
+        learn_smooth = np.interp(phase_x, phase_g2_sorted, learn_sorted)
+        ax_phase.fill_between(
+            phase_x,
+            storage_smooth,
+            learn_smooth,
+            color=colors[i],
+            alpha=0.12,
+        )
+        ax_phase.plot(
+            phase_x,
+            storage_smooth,
+            "-",
+            color=colors[i],
+            lw=2.2,
+            label=rf"storage boundary, $\lambda={lam_i:.2f}$",
+        )
+        ax_phase.plot(
+            phase_x,
+            learn_smooth,
+            "--",
+            color=colors[i],
+            alpha=0.95,
+            lw=2.0,
+            label=rf"learning boundary, $\lambda={lam_i:.2f}$",
+        )
+        ax_phase.scatter(phase_g2_sorted, storage_sorted, color=colors[i], s=18, alpha=0.65)
+        ax_phase.scatter(phase_g2_sorted, learn_sorted, color=colors[i], s=18, alpha=0.65, marker="s")
+    ax_phase.set_xlabel(r"Covariance strength $g_2$")
+    ax_phase.set_ylabel(r"Storage load $\alpha = P/N$")
+    ax_phase.set_title("Storage-learning phase diagram")
+    ax_phase.set_xscale("log")
+    ax_phase.set_xlim(float(np.min(phase_g2)) * 0.95, float(np.max(phase_g2)) * 1.05)
+    ax_phase.legend(frameon=False, fontsize=9, ncol=2)
+    save_fig(fig_phase, RESULT_DIR / "ch03_storage_learning_phase_diagram.png")
+    plt.close(fig_phase)
 
     # Plot: Pc vs lambda (centered vs uncentered) as a single figure
     fig_pc, ax_pc = plt.subplots(figsize=(8.6, 5.2))
@@ -64,6 +130,16 @@ def main() -> None:
     ax_shift.legend(frameon=False)
     save_fig(fig_shift, RESULT_DIR / "ch03_centering_shift_scaling.png")
     plt.close(fig_shift)
+
+    fig_ag2, ax_ag2 = plt.subplots(figsize=(8.6, 5.2))
+    for i, lam_i in enumerate(lam_two.tolist()):
+        ax_ag2.plot(alpha_g2, alpha_star[i], "o-", label=rf"$\lambda={lam_i:.2f}$")
+    ax_ag2.set_xlabel(r"$g_2$")
+    ax_ag2.set_ylabel(r"$\alpha^*_{learn}$")
+    ax_ag2.set_title(r"Chapter 3: $\alpha^*$ vs $g_2$ for two $\lambda$")
+    ax_ag2.legend(frameon=False)
+    save_fig(fig_ag2, RESULT_DIR / "ch03_alpha_vs_g2.png")
+    plt.close(fig_ag2)
 
 
 if __name__ == "__main__":

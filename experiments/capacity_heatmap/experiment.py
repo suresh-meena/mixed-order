@@ -31,7 +31,7 @@ def _evaluate_cell(args):
 
 
 def heatmap_p_lambda(N, beta, n_p, n_lam, n_trials, n_seeds,
-                     success_threshold=0.9, overlap_threshold=0.95,
+                     success_threshold=0.99, overlap_threshold=0.99,
                      device=None, topology_device=None, n_jobs=1,
                      seed_batch_size=None, triangle_chunk_size=8192):
     if device is None:

@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+# Ensure repository root is on sys.path when running this script directly
+import sys
+import pathlib
+_file = pathlib.Path(__file__).resolve()
+_repo_root = None
+for _ancestor in _file.parents:
+    if _ancestor.name == "experiments":
+        _repo_root = _ancestor.parent
+        break
+if _repo_root is None:
+    _repo_root = _file.parents[1] if len(_file.parents) >= 2 else _file.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -95,19 +109,19 @@ def _alpha_curve(N: int, alpha_grid: np.ndarray, n_seeds: int, n_trials: int, no
         noise_level=noise,
         device=_DEVICE,
     ).detach().cpu().numpy()
-    success = (overlaps >= 0.9).mean(axis=2)
+    success = (overlaps >= 0.99).mean(axis=2)
     mean_m = overlaps.mean(axis=2)
     return success.mean(axis=0), mean_m.mean(axis=0)
 
 
 def run_ch01(
-    n_values: Tuple[int, ...] = (1000,),
+    n_values: Tuple[int, ...] = (200, 500, 1000),
     n_alpha: int = 32,
     n_trials: int = 16,
-    n_seeds: int = 10,
+    n_seeds: int = 5,
     noise_level: float = 0.1,
-    update_N: int = 1000,
-    update_seeds: int = 10,
+    update_N: int = 500,
+    update_seeds: int = 5,
     update_noise: float = 0.1,
 ) -> Dict[str, np.ndarray]:
     ensure_dir(RESULT_DIR)
@@ -127,15 +141,23 @@ def run_ch01(
             lam=0.0,
             n_trials=n_trials,
             n_seeds=n_seeds,
-            success_threshold=0.9,
-            overlap_threshold=0.9,
+            success_threshold=0.99,
+            overlap_threshold=0.99,
             noise_level=noise_level,
             device=_DEVICE,
         )
         pc_vals.append(pc)
 
-    # 1.2 update-rule sanity check with explicit sync/async updates on same seeds.
-    alpha_update = np.linspace(0.05, 0.17, 20)
+    # 1.2 update-rule sanity check at one subcritical and one near-critical load,
+    # selected from the N=update_N curve.
+    if update_N in n_values:
+        ref_idx = int(np.where(np.asarray(n_values) == update_N)[0][0])
+    else:
+        ref_idx = int(np.argmin(np.abs(np.asarray(n_values) - update_N)))
+    ref_success = np.asarray(curves_success)[ref_idx]
+    idx_sub = int(np.argmax(ref_success >= 0.97)) if np.any(ref_success >= 0.97) else 0
+    idx_near = int(np.argmin(np.abs(ref_success - 0.99)))
+    alpha_update = np.unique(np.asarray([alpha_grid[idx_sub], alpha_grid[idx_near]], dtype=float))
     async_curve = []
     sync_curve = []
     async_m = []
@@ -159,8 +181,8 @@ def run_ch01(
             final_sync = _sync_run(J, init, n_steps=25)
             m_a = float(np.mean(final_async * target))
             m_s = float(np.mean(final_sync * target))
-            succ_async_seed.append(m_a > 0.9)
-            succ_sync_seed.append(m_s > 0.9)
+            succ_async_seed.append(m_a > 0.99)
+            succ_sync_seed.append(m_s > 0.99)
             m_async_seed.append(m_a)
             m_sync_seed.append(m_s)
             if representative_trace is None and a_idx == 0 and seed == 0:

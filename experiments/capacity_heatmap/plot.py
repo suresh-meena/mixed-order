@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+# Ensure repository root is on sys.path when running this script directly
+import sys
+import pathlib
+_file = pathlib.Path(__file__).resolve()
+_repo_root = None
+for _ancestor in _file.parents:
+    if _ancestor.name == "experiments":
+        _repo_root = _ancestor.parent
+        break
+if _repo_root is None:
+    _repo_root = _file.parents[1] if len(_file.parents) >= 2 else _file.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
 import os
 import numpy as np
 import matplotlib.ticker as mticker
@@ -54,7 +68,7 @@ def main() -> None:
     ax_th.legend(loc="upper right", framealpha=0.75, labelcolor="white", facecolor="#333333", edgecolor="none", fontsize=10)
     cb_th = fig_th.colorbar(im_th, ax=ax_th, pad=0.02, fraction=0.046)
     cb_th.set_label(r"$P_c$  (critical capacity)", labelpad=8)
-    fig_th.suptitle(rf"Mixed-Order Hopfield Network capacity heatmap  ($N={N},\\;\beta={beta}$)")
+    fig_th.suptitle(f"Mixed-Order Hopfield Network capacity heatmap (N={N}, beta={beta})")
     path_th = os.path.join(RESULT_DIR, "heatmap_p_lambda_analytical.png")
     fig_th.savefig(path_th)
     plt.close(fig_th)
@@ -93,7 +107,7 @@ def main() -> None:
         bbox=dict(boxstyle="round,pad=0.3", fc="#00000099", ec="none"),
     )
 
-    fig_emp.suptitle(rf"Mixed-Order Hopfield Network capacity heatmap  ($N={N},\;\beta={beta}$)")
+    fig_emp.suptitle(f"Mixed-Order Hopfield Network capacity heatmap (N={N}, beta={beta})")
     path_emp = os.path.join(RESULT_DIR, "heatmap_p_lambda_empirical.png")
     fig_emp.savefig(path_emp)
     plt.close(fig_emp)

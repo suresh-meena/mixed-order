@@ -3,6 +3,20 @@ import numpy as np
 from scipy.stats import spearmanr
 from tqdm import tqdm
 
+# Ensure repository root is on sys.path when running this script directly
+import sys
+import pathlib
+_file = pathlib.Path(__file__).resolve()
+_repo_root = None
+for _ancestor in _file.parents:
+    if _ancestor.name == "experiments":
+        _repo_root = _ancestor.parent
+        break
+if _repo_root is None:
+    _repo_root = _file.parents[1] if len(_file.parents) >= 2 else _file.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
 from experiments.plot_helpers import apply_pub_style
 from mixed_order.theory import (
     compute_q_from_budget,
@@ -74,6 +88,7 @@ def limiting_cases(N, beta, n_trials, n_seeds, n_p_values=8, n_lam_sweep=25):
         p_fixed=p_fixed,
         lam_pw=lam_pw,
         lam_3b=lam_3b,
+        lam_opt_fixed=lam_opt_fixed,
         rho_pw=rho_pw,
         rho_3b=rho_3b,
     )

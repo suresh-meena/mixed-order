@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+# Ensure repository root is on sys.path when running this script directly
+import sys
+import pathlib
+_file = pathlib.Path(__file__).resolve()
+_repo_root = None
+for _ancestor in _file.parents:
+    if _ancestor.name == "experiments":
+        _repo_root = _ancestor.parent
+        break
+if _repo_root is None:
+    _repo_root = _file.parents[1] if len(_file.parents) >= 2 else _file.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -117,9 +131,9 @@ def _retrieve_batch(
 
 
 def run_ch05(
-    N: int = 1000,
+    N: int = 500,
     n_trials: int = 800,
-    n_seeds: int = 10,
+    n_seeds: int = 5,
     beta: float = 8.0,
     max_steps: int = 10,
     cubic_weight: float = 1.0,
@@ -166,8 +180,8 @@ def run_ch05(
             final_pair = _retrieve_batch(cue, patterns, ti, tj, tk, mode="pairwise", beta=beta, max_steps=max_steps, cubic_weight=cubic_weight)
             final_mix = _retrieve_batch(cue, patterns, ti, tj, tk, mode="mixed", beta=beta, max_steps=max_steps, cubic_weight=cubic_weight)
 
-            succ_pair = (np.mean(final_pair * target, axis=1) > 0.9).astype(np.float32)
-            succ_mix = (np.mean(final_mix * target, axis=1) > 0.9).astype(np.float32)
+            succ_pair = (np.mean(final_pair * target, axis=1) > 0.99).astype(np.float32)
+            succ_mix = (np.mean(final_mix * target, axis=1) > 0.99).astype(np.float32)
 
             acc_pair.append(float(np.mean(pred_pair == target_idx)))
             acc_mixed.append(float(np.mean(pred_mix == target_idx)))

@@ -1,9 +1,24 @@
 from __future__ import annotations
 
+# Ensure repository root is on sys.path when running this script directly
+import sys
+import pathlib
+_file = pathlib.Path(__file__).resolve()
+_repo_root = None
+for _ancestor in _file.parents:
+    if _ancestor.name == "experiments":
+        _repo_root = _ancestor.parent
+        break
+if _repo_root is None:
+    _repo_root = _file.parents[1] if len(_file.parents) >= 2 else _file.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
 import os
 import numpy as np
 
 from experiments.plot_helpers import apply_pub_style, save_fig, plt
+from mixed_order.theory import optimal_lambda
 
 RESULT_DIR = os.path.dirname(__file__)
 
@@ -21,9 +36,9 @@ def main() -> None:
     pc_th_sw = data["pc_th_sw"]
     pc_emp_sw = data["pc_emp_sw"]
     p_fixed = float(data["p_fixed"])
-    lam_opt_fixed = float(data["lam_opt_fixed"])
     N = int(data["N"])
     beta = float(data["beta"])
+    lam_opt_fixed = float(data["lam_opt_fixed"]) if "lam_opt_fixed" in data.files else float(optimal_lambda(p_fixed, beta))
     alpha_c = 0.138
 
     fig1, ax1 = plt.subplots(figsize=(9, 5.5), constrained_layout=True)

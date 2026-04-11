@@ -48,7 +48,7 @@ def unpack_prefixed(data: Dict[str, np.ndarray], prefix: str) -> Dict[str, np.nd
     return out
 
 
-def success_rate(overlaps: np.ndarray, threshold: float = 0.9) -> float:
+def success_rate(overlaps: np.ndarray, threshold: float = 0.99) -> float:
     return float((overlaps >= threshold).mean())
 
 

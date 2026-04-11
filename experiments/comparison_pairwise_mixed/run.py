@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-# Ensure repo root on sys.path when running script directly
 import sys
 import pathlib
 _file = pathlib.Path(__file__).resolve()
@@ -14,14 +13,12 @@ if _repo_root is None:
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
-from experiments.common import apply_pub_style
-from experiments.ch01_baseline.experiment import run_ch01
-from experiments.ch01_baseline.plot import main as plot_main
+from experiments.comparison_pairwise_mixed.experiment import run_comparison
+from experiments.comparison_pairwise_mixed.plot import main as plot_main
 
 
 def main() -> None:
-    apply_pub_style()
-    run_ch01()
+    run_comparison()
     plot_main()
 
 

@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+# Ensure repository root is on sys.path when running this script directly
+import sys
+import pathlib
+_file = pathlib.Path(__file__).resolve()
+_repo_root = None
+for _ancestor in _file.parents:
+    if _ancestor.name == "experiments":
+        _repo_root = _ancestor.parent
+        break
+if _repo_root is None:
+    _repo_root = _file.parents[1] if len(_file.parents) >= 2 else _file.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
 from pathlib import Path
 from typing import Dict
 
@@ -48,7 +62,7 @@ def _success_overlap_curves(
             noise_level=0.1,
             topology_cache=topology_cache,
         )
-        success[lidx] = (ov_t >= 0.9).to(dtype=torch.float32).mean(dim=(0, 2)).cpu().numpy()
+        success[lidx] = (ov_t >= 0.99).to(dtype=torch.float32).mean(dim=(0, 2)).cpu().numpy()
         overlap[lidx] = ov_t.mean(dim=(0, 2)).cpu().numpy()
 
     return {"success": success, "overlap": overlap}
@@ -105,7 +119,7 @@ def _drift_alignment(
     return {"drift": drift, "align": align}
 
 
-def _alpha_star_from_success(alpha_vals: np.ndarray, success: np.ndarray, threshold: float = 0.9) -> np.ndarray:
+def _alpha_star_from_success(alpha_vals: np.ndarray, success: np.ndarray, threshold: float = 0.99) -> np.ndarray:
     out = np.zeros(success.shape[0], dtype=float)
     for i in range(success.shape[0]):
         s = success[i]
@@ -125,18 +139,18 @@ def _alpha_star_from_success(alpha_vals: np.ndarray, success: np.ndarray, thresh
 
 def _phase_labels(success_map: np.ndarray, overlap_map: np.ndarray) -> np.ndarray:
     labels = np.full(success_map.shape, 2, dtype=np.int32)  # 2=failure
-    labels[(success_map < 0.9) & (overlap_map >= 0.5)] = 1  # 1=learning
-    labels[success_map >= 0.9] = 0  # 0=storage
+    labels[(success_map < 0.99) & (overlap_map >= 0.5)] = 1  # 1=learning
+    labels[success_map >= 0.99] = 0  # 0=storage
     return labels
 
 
 def run_ch04(
-    N: int = 1000,
+    N: int = 500,
     p: float = 0.35,
     beta: float = 0.5,
     gamma: float = 0.75,
     n_trials: int = 12,
-    n_seeds: int = 10,
+    n_seeds: int = 5,
 ) -> Dict[str, np.ndarray]:
     ensure_dir(RESULT_DIR)
     device = _DEVICE
@@ -146,14 +160,14 @@ def run_ch04(
     C = compute_covariance(F)
     g2 = estimate_g2(C)
 
-    lam_vals = np.linspace(0.0, 6.0, 11)
-    alpha_vals = np.linspace(0.03, 0.65, 24)
+    lam_vals = np.linspace(0.0, 6.0, 13)
+    alpha_vals = np.linspace(0.03, 0.65, 28)
 
     topology_cache: dict = {}
     curves = _success_overlap_curves(N, p, beta, lam_vals, alpha_vals, F, n_trials=n_trials, n_seeds=n_seeds, device=device, topology_cache=topology_cache)
     drift_align = _drift_alignment(N, p, beta, lam_vals, alpha_vals, F, C, device=device)
 
-    alpha_star = _alpha_star_from_success(alpha_vals, curves["success"], threshold=0.9)
+    alpha_star = _alpha_star_from_success(alpha_vals, curves["success"], threshold=0.99)
     x_scale = (1.0 + lam_vals / 2.0) / np.sqrt(g2)
     c_fit = float(np.dot(x_scale, alpha_star) / (np.dot(x_scale, x_scale) + 1e-12))
     alpha_pred = c_fit * x_scale
@@ -161,7 +175,7 @@ def run_ch04(
     phase_labels = _phase_labels(curves["success"], curves["overlap"])
 
     # boundary curve for phase map: first alpha where success drops below 0.9
-    boundary_alpha = _alpha_star_from_success(alpha_vals, curves["success"], threshold=0.9)
+    boundary_alpha = _alpha_star_from_success(alpha_vals, curves["success"], threshold=0.99)
 
     results: Dict[str, np.ndarray] = {
         "N": np.array([N], dtype=np.int32),
