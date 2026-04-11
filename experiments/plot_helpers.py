@@ -13,6 +13,13 @@ import os
 import sys
 import typing as _t
 
+_mplconfigdir = os.path.join("/tmp", "matplotlib")
+os.environ.setdefault("MPLCONFIGDIR", _mplconfigdir)
+try:
+    os.makedirs(_mplconfigdir, exist_ok=True)
+except Exception:
+    pass
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
